@@ -9,7 +9,7 @@ from threading import Thread
 
 # 🔑 چابیاں (Keys)
 TELEGRAM_TOKEN = "7690264234:AAFOHa0hy-J2oPfuTCuxI4rJ4flByeLWWgQ"
-GEMINI_API_KEY = "AQ.Ab8RN6IEfr4SL9d27593e6By3WDjrfnvzxD-WbYxFni42jAcCQ"
+GEMINI_API_KEY = "AQ.Ab8RN6KoxJVsgcQ8gOVtk_cgCbvsr7ggutNtOMD8xk6LaJksyg"
 
 # --- 24 گھنٹے جاگنے والا سرور (Flask) ---
 web_app = Flask(__name__)
