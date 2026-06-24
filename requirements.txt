@@ -1,0 +1,4 @@
+flask
+yt-dlp
+python-telegram-bot
+google-genai
