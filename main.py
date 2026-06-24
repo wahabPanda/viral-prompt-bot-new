@@ -7,9 +7,9 @@ from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from flask import Flask
 from threading import Thread
 
-# 🔑 چابیاں (Keys) - اپنی keys یہاں ڈالیں
-TELEGRAM_TOKEN = "7690264234:AAEkarjFh0uoJsE-6ovUES9Fn1T8PRKhKEk"
-GEMINI_API_KEY = "AQ.Ab8RN6JmEmM_EkFqqDwoK_QjJP3lIop9laaYDLW_8xxGM_PEpg"
+# 🔑 چابیاں (Keys) - Render کے Environment Variables سے آئیں گی
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 # --- 24 گھنٹے جاگنے والا سرور (Flask) ---
 web_app = Flask(__name__)
