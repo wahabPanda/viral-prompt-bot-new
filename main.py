@@ -1,15 +1,15 @@
 import os
 import time
 import yt_dlp
-from google import genai
+import google.generativeai as genai
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from flask import Flask
 from threading import Thread
 
-# 🔑 چابیاں (Keys)
-TELEGRAM_TOKEN = "7690264234:AAFOHa0hy-J2oPfuTCuxI4rJ4flByeLWWgQ"
-GEMINI_API_KEY = "AQ.Ab8RN6KoxJVsgcQ8gOVtk_cgCbvsr7ggutNtOMD8xk6LaJksyg"
+# 🔑 چابیاں (Keys) - اپنی keys یہاں ڈالیں
+TELEGRAM_TOKEN = "7690264234:AAEkarjFh0uoJsE-6ovUES9Fn1T8PRKhKEk"
+GEMINI_API_KEY = "AQ.Ab8RN6JmEmM_EkFqqDwoK_QjJP3lIop9laaYDLW_8xxGM_PEpg"
 
 # --- 24 گھنٹے جاگنے والا سرور (Flask) ---
 web_app = Flask(__name__)
@@ -26,9 +26,10 @@ def keep_alive():
     t.start()
 # ---------------------------------------
 
-client = genai.Client(api_key=GEMINI_API_KEY)
+# ✅ نیا صحیح طریقہ - AQ. والی key کے لیے
+genai.configure(api_key=GEMINI_API_KEY)
 
-# 🎬 آپ کا پسندیدہ پرانا ماسٹر پرامپٹ (Veo 3.1 & Seedance.2)
+# 🎬 ماسٹر پرامپٹ
 SYSTEM_PROMPT = """
 You are the "Viral Master Prompt Engine", an elite Hollywood-level video director and social media expert.
 Analyze this video perfectly and generate a highly detailed, cinematic MASTER PROMPT specifically optimized and tailored for **Google Veo 3.1 and Seedance.2**.
@@ -65,37 +66,43 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     try:
+        # ✅ Step 1: ویڈیو ڈاؤنلوڈ کریں
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
-        
-        await context.bot.send_message(chat_id=chat_id, text="🎥 ویڈیو آ گئی! اب گوگل کا دماغ اسے سمجھ رہا ہے (اس میں 10 سے 20 سیکنڈ لگ سکتے ہیں)...")
 
-        # 1. ویڈیو اپلوڈ کریں
-        video_file = client.files.upload(file="temp_video.mp4")
-        
-        # 2. ⏳ جب تک گوگل پروسیسنگ ختم نہ کرے، انتظار کریں (400 ایرر کا پکا علاج)
+        await context.bot.send_message(chat_id=chat_id, text="🎥 ویڈیو آ گئی! اب AI اسے سمجھ رہا ہے...")
+
+        # ✅ Step 2: ویڈیو اپلوڈ کریں نئے SDK سے
+        video_file = genai.upload_file(
+            path="temp_video.mp4",
+            mime_type="video/mp4"
+        )
+
+        # ✅ Step 3: Processing کا انتظار کریں
         while True:
-            video_file = client.files.get(name=video_file.name)
-            state = str(video_file.state)
+            file_info = genai.get_file(video_file.name)
+            state = str(file_info.state)
             if "ACTIVE" in state:
-                break 
+                break
             elif "FAILED" in state:
                 raise Exception("گوگل اس ویڈیو کو پروسیس نہیں کر سکا۔")
-            time.sleep(4) 
+            time.sleep(4)
 
-        # 3. پرامپٹ تیار کروائیں
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[SYSTEM_PROMPT, video_file]
-        )
+        # ✅ Step 4: Master Prompt بنائیں
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        response = model.generate_content([SYSTEM_PROMPT, video_file])
 
         await context.bot.send_message(chat_id=chat_id, text=response.text)
 
-        os.remove("temp_video.mp4")
-        client.files.delete(name=video_file.name)
+        # ✅ Step 5: Cleanup
+        if os.path.exists("temp_video.mp4"):
+            os.remove("temp_video.mp4")
+        genai.delete_file(video_file.name)
 
     except Exception as e:
         await context.bot.send_message(chat_id=chat_id, text=f"❌ مسئلہ ہو گیا استاد جی: {str(e)}")
+        if os.path.exists("temp_video.mp4"):
+            os.remove("temp_video.mp4")
 
 def main():
     keep_alive()
