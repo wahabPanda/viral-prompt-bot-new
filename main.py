@@ -1,31 +1,19 @@
 import os
-from google import genai
-from google.genai import types
-from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from flask import Flask, request, jsonify
-import yt_dlp
 import time
 import threading
 import asyncio
+from google import genai
+from google.genai import types
+import yt_dlp
+from telegram import Update
+from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 # 🔑 Keys
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 # Gemini client
 client = genai.Client(api_key=GEMINI_API_KEY)
-
-# Flask app
-flask_app = Flask(__name__)
-flask_app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
-
-# Global event loop
-loop = asyncio.new_event_loop()
-
-# Telegram Application
-ptb_app = Application.builder().token(TELEGRAM_TOKEN).build()
 
 # 🎬 ماسٹر پرامپٹ
 SYSTEM_PROMPT = """
@@ -46,33 +34,26 @@ Structure your response EXACTLY like this:
 Do not add any other conversational text. Just give me the pure Master Prompt format.
 """
 
-async def process_video(chat_id, url):
-    ydl_opts = {
-        'format': 'best[filesize<20M]/best',
-        'outtmpl': f'temp_video_{chat_id}.%(ext)s',
-        'quiet': True,
-        'noplaylist': True,
-        'merge_output_format': 'mp4',
-    }
-
-    video_path = None
+async def process_video(bot, chat_id, url):
+    video_path = f"video_{chat_id}.mp4"
     uploaded = None
 
     try:
+        ydl_opts = {
+            'format': 'best[filesize<20M]/best',
+            'outtmpl': video_path,
+            'quiet': True,
+            'noplaylist': True,
+            'merge_output_format': 'mp4',
+        }
+
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
-        # فائل ڈھونڈو
-        for ext in ['mp4', 'webm', 'mkv', 'avi']:
-            path = f'temp_video_{chat_id}.{ext}'
-            if os.path.exists(path):
-                video_path = path
-                break
-
-        if not video_path:
+        if not os.path.exists(video_path):
             raise Exception("ویڈیو ڈاؤنلوڈ نہیں ہوئی۔")
 
-        await ptb_app.bot.send_message(chat_id=chat_id, text="🎥 ویڈیو آ گئی! اب AI اسے سمجھ رہا ہے...")
+        await bot.send_message(chat_id=chat_id, text="🎥 ویڈیو آ گئی! اب AI اسے سمجھ رہا ہے...")
 
         with open(video_path, "rb") as f:
             video_bytes = f.read()
@@ -99,12 +80,12 @@ async def process_video(chat_id, url):
             ]
         )
 
-        await ptb_app.bot.send_message(chat_id=chat_id, text=response.text)
+        await bot.send_message(chat_id=chat_id, text=response.text)
 
     except Exception as e:
-        await ptb_app.bot.send_message(chat_id=chat_id, text=f"❌ مسئلہ ہو گیا استاد جی: {str(e)}")
+        await bot.send_message(chat_id=chat_id, text=f"❌ مسئلہ ہو گیا: {str(e)}")
     finally:
-        if video_path and os.path.exists(video_path):
+        if os.path.exists(video_path):
             os.remove(video_path)
         if uploaded:
             try:
@@ -120,49 +101,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text="استاد جی، کوئی فیس بک، ٹک ٹاک یا یوٹیوب کا لنک بھیجیں! 🚀")
         return
 
-    await context.bot.send_message(chat_id=chat_id, text="⏳ لنک مل گیا! ویڈیو ڈاؤنلوڈ کر کے AI کو بھیج رہا ہوں...")
+    await context.bot.send_message(chat_id=chat_id, text="⏳ لنک مل گیا! ویڈیو ڈاؤنلوڈ ہو رہی ہے...")
 
-    # Background میں چلاؤ — webhook timeout نہیں ہوگا
-    asyncio.run_coroutine_threadsafe(process_video(chat_id, url), loop)
+    # Background thread میں process کرو
+    loop = asyncio.get_event_loop()
+    asyncio.ensure_future(process_video(context.bot, chat_id, url))
 
-@flask_app.route('/webhook', methods=['POST'])
-def webhook():
-    data = request.get_json(force=True)
-    update = Update.de_json(data, ptb_app.bot)
-    asyncio.run_coroutine_threadsafe(ptb_app.process_update(update), loop)
-    return 'OK', 200  # فوری OK دو — processing background میں ہوگی
-
-@flask_app.route('/set_webhook', methods=['GET'])
-def set_webhook():
-    webhook_url = f"{WEBHOOK_URL}/webhook"
-    future = asyncio.run_coroutine_threadsafe(
-        ptb_app.bot.set_webhook(url=webhook_url), loop
+async def main():
+    # پرانی webhook ہٹاؤ
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    await app.bot.delete_webhook(drop_pending_updates=True)
+    
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    print("🚀 بوٹ polling mode میں لائیو ہے!")
+    
+    await app.run_polling(
+        drop_pending_updates=True,
+        allowed_updates=["message"]
     )
-    result = future.result(timeout=10)
-    if result:
-        return jsonify({"status": "✅ Webhook لگ گئی!", "url": webhook_url})
-    else:
-        return jsonify({"status": "❌ Webhook نہیں لگی"})
-
-@flask_app.route('/')
-def home():
-    return "استاد جی، فیکٹری 24 گھنٹے لائیو ہے! 🚀"
-
-def run_event_loop():
-    asyncio.set_event_loop(loop)
-    loop.run_forever()
-
-async def init_ptb():
-    ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    await ptb_app.initialize()
-    await ptb_app.start()
-    await ptb_app.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
-    print(f"✅ Webhook لگ گئی: {WEBHOOK_URL}/webhook")
 
 if __name__ == "__main__":
-    t = threading.Thread(target=run_event_loop, daemon=True)
-    t.start()
-    asyncio.run_coroutine_threadsafe(init_ptb(), loop).result()
-    print("🚀 بوٹ لائیو ہے!")
-    port = int(os.environ.get("PORT", 8080))
-    flask_app.run(host='0.0.0.0', port=port)
+    asyncio.run(main())
