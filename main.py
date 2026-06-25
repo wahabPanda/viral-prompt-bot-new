@@ -1,33 +1,26 @@
 import os
-import time
-import yt_dlp
 import google.generativeai as genai
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from flask import Flask
-from threading import Thread
+from flask import Flask, request
+import asyncio
+import yt_dlp
+import time
+import threading
 
-# 🔑 چابیاں (Keys) - Render کے Environment Variables سے آئیں گی
+# 🔑 Keys - Render Environment Variables سے
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # e.g. https://viral-prompt-bot-new.onrender.com
 
-# --- 24 گھنٹے جاگنے والا سرور (Flask) ---
-web_app = Flask(__name__)
-
-@web_app.route('/')
-def home():
-    return "استاد جی، فیکٹری 24 گھنٹے لائیو ہے! 🚀"
-
-def run_server():
-    web_app.run(host='0.0.0.0', port=8080)
-
-def keep_alive():
-    t = Thread(target=run_server)
-    t.start()
-# ---------------------------------------
-
-# ✅ نیا صحیح طریقہ - AQ. والی key کے لیے
+# Gemini configure
 genai.configure(api_key=GEMINI_API_KEY)
+
+# Flask app
+flask_app = Flask(__name__)
+
+# Telegram app (global)
+telegram_app = None
 
 # 🎬 ماسٹر پرامپٹ
 SYSTEM_PROMPT = """
@@ -66,19 +59,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     try:
-        # ✅ Step 1: ویڈیو ڈاؤنلوڈ کریں
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([url])
 
         await context.bot.send_message(chat_id=chat_id, text="🎥 ویڈیو آ گئی! اب AI اسے سمجھ رہا ہے...")
 
-        # ✅ Step 2: ویڈیو اپلوڈ کریں نئے SDK سے
         video_file = genai.upload_file(
             path="temp_video.mp4",
             mime_type="video/mp4"
         )
 
-        # ✅ Step 3: Processing کا انتظار کریں
         while True:
             file_info = genai.get_file(video_file.name)
             state = str(file_info.state)
@@ -88,13 +78,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise Exception("گوگل اس ویڈیو کو پروسیس نہیں کر سکا۔")
             time.sleep(4)
 
-        # ✅ Step 4: Master Prompt بنائیں
         model = genai.GenerativeModel("gemini-2.5-flash")
         response = model.generate_content([SYSTEM_PROMPT, video_file])
 
         await context.bot.send_message(chat_id=chat_id, text=response.text)
 
-        # ✅ Step 5: Cleanup
         if os.path.exists("temp_video.mp4"):
             os.remove("temp_video.mp4")
         genai.delete_file(video_file.name)
@@ -104,12 +92,44 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists("temp_video.mp4"):
             os.remove("temp_video.mp4")
 
-def main():
-    keep_alive()
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    print("🚀 فیکٹری چالو ہو گئی ہے! بوٹ 24 گھنٹے کے لیے لائیو ہے...")
-    app.run_polling(drop_pending_updates=True)
+@flask_app.route('/')
+def home():
+    return "استاد جی، فیکٹری 24 گھنٹے لائیو ہے! 🚀"
+
+@flask_app.route(f'/webhook', methods=['POST'])
+def webhook():
+    data = request.get_json()
+    if telegram_app:
+        asyncio.run(telegram_app.update_queue.put(
+            Update.de_json(data, telegram_app.bot)
+        ))
+    return 'OK'
+
+async def setup_webhook():
+    await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+    print(f"✅ Webhook لگ گئی: {WEBHOOK_URL}/webhook")
+
+def run_flask():
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host='0.0.0.0', port=port)
+
+async def main():
+    global telegram_app
+    telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
+    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    await telegram_app.initialize()
+    await setup_webhook()
+    await telegram_app.start()
+
+    print("🚀 بوٹ Webhook موڈ میں لائیو ہے!")
+
+    # Flask الگ thread میں چلاؤ
+    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+
+    # bot چلتا رہے
+    await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
