@@ -8,22 +8,23 @@ from threading import Thread
 import yt_dlp
 
 # ==========================================
-# 🔑 استاد جی، آپ کی چابیاں یہاں لگ گئی ہیں
+# 🔑 چابیاں اب تجوری (Environment Variables) سے آئیں گی
 # ==========================================
-TELEGRAM_TOKEN = "7690264234:AAEe1YNQQMu5xikVIB-Rcg6nJVklYAuOPvc"
-GEMINI_API_KEY = "AIzaSyBKzLzA8PFwzY9SqDDlOYp1tho_yI3AvF8"
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# جیمنی کی کنفیگریشن
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+# جیمنی کی کنفیگریشن (لیٹسٹ 2.5 ماڈل کے ساتھ)
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel('gemini-2.5-flash')
 
 # ==========================================
-# 🌐 Flask Server (بوٹ کو 24 گھنٹے جاگتا رکھنے کے لیے)
+# 🌐 سرور کو 24 گھنٹے جاگتا رکھنے کے لیے (Flask)
 # ==========================================
 app = Flask(__name__)
 @app.route('/')
 def home():
-    return "استاد جی کی وائرل فیکٹری چل رہی ہے! 🚀"
+    return "استاد جی کی وائرل فیکٹری فل سپیڈ پر چل رہی ہے! 🚀"
 
 def run():
     app.run(host='0.0.0.0', port=8080)
@@ -33,7 +34,7 @@ def keep_alive():
     t.start()
 
 # ==========================================
-# 📥 ویڈیو ڈاؤنلوڈر (yt-dlp)
+# 📥 ویڈیو ڈاؤنلوڈر 
 # ==========================================
 def download_video(url, output_path="video.mp4"):
     if os.path.exists(output_path):
@@ -49,7 +50,7 @@ def download_video(url, output_path="video.mp4"):
     return output_path
 
 # ==========================================
-# 🤖 ٹیلی گرام میسج ہینڈلر
+# 🤖 ٹیلی گرام مین فنکشن
 # ==========================================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -57,15 +58,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("استاد جی! براہ کرم فیس بک یا ٹک ٹاک کی ویڈیو کا لنک بھیجیں۔ 🚀")
         return
 
+    if not GEMINI_API_KEY or not TELEGRAM_TOKEN:
+        await update.message.reply_text("❌ استاد جی! رینڈر کی تجوری میں چابیاں (Environment Variables) غائب ہیں۔")
+        return
+
     msg = await update.message.reply_text("⏳ لنک مل گیا! فیکٹری ویڈیو ڈاؤنلوڈ کر رہی ہے...")
     video_path = "video.mp4"
     
     try:
-        # 1. ویڈیو ڈاؤنلوڈ کریں
         download_video(text, video_path)
-        await msg.edit_text("🎥 ویڈیو ڈاؤنلوڈ ہو گئی! اب گوگل کا دماغ اپلوڈ بائی پاس کر کے اسے چیک کر رہا ہے...")
+        await msg.edit_text("🎥 ویڈیو مل گئی! جیمنی 2.5 وائرل پرامپٹ لکھ رہا ہے (تھوڑا انتظار کریں)...")
 
-        # 2. گوگل کو ڈائریکٹ ڈیٹا بھیجیں (401 ایرر بائی پاس ٹرک)
+        # ویڈیو کا ڈیٹا ڈائریکٹ میموری میں (401 ایرر بائی پاس)
         video_data = {
             "mime_type": "video/mp4",
             "data": pathlib.Path(video_path).read_bytes()
@@ -73,28 +77,25 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         prompt = "اس ویڈیو کو غور سے دیکھو اور فیس بک اور ٹک ٹاک کے لیے ایک زبردست، وائرل اور پرکشش پرامپٹ (کیپشن اور ہیش ٹیگز کے ساتھ) لکھو۔"
         
-        # 3. جیمنی سے وائرل پرامپٹ لکھوائیں
         response = model.generate_content([prompt, video_data])
-        
-        # 4. رزلٹ واپس بھیجیں
         await msg.edit_text(f"🔥 **یہ لیں آپ کا ماسٹر پرامپٹ:**\n\n{response.text}")
 
     except Exception as e:
-        error_msg = str(e)
-        if "401" in error_msg or "UNAUTHENTICATED" in error_msg:
-            await msg.edit_text("❌ استاد جی! گوگل نے اس `AQ.` والی چابی کو پوری طرح بلاک کر دیا ہے۔ آپ کو پرانے طریقے سے `AIza` والی چابی ہی نکالنی پڑے گی (Service Account والا ڈبہ خالی چھوڑ کر)۔")
-        else:
-            await msg.edit_text(f"❌ مسئلہ ہو گیا:\n{error_msg}")
+        await msg.edit_text(f"❌ مسئلہ ہو گیا:\n{str(e)}")
             
     finally:
-        # صفائی (تاکہ سرور فل نہ ہو)
+        # سرور پر کچرا جمع نہ ہو
         if os.path.exists(video_path):
             os.remove(video_path)
 
 # ==========================================
-# 🚀 مین فنکشن (بوٹ سٹارٹر)
+# 🚀 بوٹ سٹارٹر
 # ==========================================
 def main():
+    if not TELEGRAM_TOKEN:
+        print("❌ ٹیلی گرام ٹوکن غائب ہے!")
+        return
+    
     keep_alive()
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
