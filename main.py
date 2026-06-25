@@ -1,149 +1,104 @@
 import os
-import threading
-import asyncio
-from flask import Flask
-from google import genai
-from google.genai import types
-import yt_dlp
+import pathlib
+import google.generativeai as genai
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from flask import Flask
+from threading import Thread
+import yt_dlp
 
-# --- Render کے لیے Dummy Web Server ---
-# یہ حصہ Render کو بتائے گا کہ آپ کی ایپ زندہ ہے، تاکہ وہ اسے بند نہ کرے۔
-web_app = Flask(__name__)
+# ==========================================
+# 🔑 استاد جی، آپ کی چابیاں یہاں لگ گئی ہیں
+# ==========================================
+TELEGRAM_TOKEN = "7690264234:AAEe1YNQQMu5xikVIB-Rcg6nJVklYAuOPvc"
+GEMINI_API_KEY = "AQ.Ab8RN6JmEmM_EkFqqDwoK_QjJP3lIop9laaYDLW_8xxGM_PEpg"
 
-@web_app.route('/')
+# جیمنی کی کنفیگریشن
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-flash')
+
+# ==========================================
+# 🌐 Flask Server (بوٹ کو 24 گھنٹے جاگتا رکھنے کے لیے)
+# ==========================================
+app = Flask(__name__)
+@app.route('/')
 def home():
-    return "Bot is running perfectly! 🚀"
+    return "استاد جی کی وائرل فیکٹری چل رہی ہے! 🚀"
 
-def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    web_app.run(host="0.0.0.0", port=port, use_reloader=False)
+def run():
+    app.run(host='0.0.0.0', port=8080)
 
-# 🔑 Keys
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
 
-# Gemini client
-client = genai.Client(api_key=GEMINI_API_KEY)
+# ==========================================
+# 📥 ویڈیو ڈاؤنلوڈر (yt-dlp)
+# ==========================================
+def download_video(url, output_path="video.mp4"):
+    if os.path.exists(output_path):
+        os.remove(output_path)
+    ydl_opts = {
+        'outtmpl': output_path,
+        'format': 'best',
+        'quiet': True,
+        'no_warnings': True
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([url])
+    return output_path
 
-# 🎬 ماسٹر پرامپٹ
-SYSTEM_PROMPT = """
-You are the "Viral Master Prompt Engine", an elite Hollywood-level video director and social media expert.
-Analyze this video perfectly and generate a highly detailed, cinematic MASTER PROMPT specifically optimized and tailored for **Google Veo 3.1 and Seedance.2**.
-
-Structure your response EXACTLY like this:
----
-🎯 NICHE & AUDIENCE
-[Identify the niche and target audience]
-
-🎬 VEO 3.1 & SEEDANCE.2 MASTER PROMPT
-[Write a highly detailed, continuous cinematic prompt. Include: Camera Angle, Lighting, Subject details, Setting, Emotion, and Action. Use highly descriptive visual keywords suitable for these specific AI models.]
-
-🧬 STORYTELLING DNA
-[Explain why this video went viral in 1-2 lines]
----
-Do not add any other conversational text. Just give me the pure Master Prompt format.
-"""
-
-async def process_video(bot, chat_id, url):
-    video_path = f"video_{chat_id}.mp4"
-    uploaded = None
-
-    try:
-        ydl_opts = {
-            'format': 'best[filesize<20M]/best',
-            'outtmpl': video_path,
-            'quiet': True,
-            'noplaylist': True,
-            'merge_output_format': 'mp4',
-        }
-
-        # ڈاؤنلوڈ کو الگ تھریڈ (thread) میں بھیج دیا تاکہ بوٹ بلاک نہ ہو
-        await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(ydl_opts).download([url]))
-
-        if not os.path.exists(video_path):
-            raise Exception("ویڈیو ڈاؤنلوڈ نہیں ہوئی۔")
-
-        await bot.send_message(chat_id=chat_id, text="🎥 ویڈیو آ گئی! اب AI اسے سمجھ رہا ہے...")
-
-        with open(video_path, "rb") as f:
-            video_bytes = f.read()
-
-        # اپلوڈ کو بھی الگ تھریڈ میں کریں
-        def upload_file():
-            return client.files.upload(
-                file=video_bytes,
-                config=types.UploadFileConfig(mime_type="video/mp4")
-            )
-        uploaded = await asyncio.to_thread(upload_file)
-
-        while True:
-            def get_file_info():
-                return client.files.get(name=uploaded.name)
-            file_info = await asyncio.to_thread(get_file_info)
-            
-            state = str(file_info.state)
-            if "ACTIVE" in state:
-                break
-            elif "FAILED" in state:
-                raise Exception("گوگل اس ویڈیو کو پروسیس نہیں کر سکا۔")
-            
-            # مسئلہ 1 کا حل: time.sleep() کی جگہ asyncio.sleep() کا استعمال
-            await asyncio.sleep(4)
-
-        def generate_prompt():
-            return client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[
-                    types.Part.from_uri(file_uri=uploaded.uri, mime_type="video/mp4"),
-                    types.Part.from_text(SYSTEM_PROMPT)
-                ]
-            )
-        
-        response = await asyncio.to_thread(generate_prompt)
-
-        await bot.send_message(chat_id=chat_id, text=response.text)
-
-    except Exception as e:
-        await bot.send_message(chat_id=chat_id, text=f"❌ مسئلہ ہو گیا: {str(e)}")
-    finally:
-        if os.path.exists(video_path):
-            os.remove(video_path)
-        if uploaded:
-            try:
-                await asyncio.to_thread(lambda: client.files.delete(name=uploaded.name))
-            except:
-                pass
-
+# ==========================================
+# 🤖 ٹیلی گرام میسج ہینڈلر
+# ==========================================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    url = update.message.text
-    chat_id = update.message.chat_id
-
-    if "http" not in url:
-        await context.bot.send_message(chat_id=chat_id, text="استاد جی، کوئی فیس بک، ٹک ٹاک یا یوٹیوب کا لنک بھیجیں! 🚀")
+    text = update.message.text
+    if not text or ("http" not in text):
+        await update.message.reply_text("استاد جی! براہ کرم فیس بک یا ٹک ٹاک کی ویڈیو کا لنک بھیجیں۔ 🚀")
         return
 
-    await context.bot.send_message(chat_id=chat_id, text="⏳ لنک مل گیا! ویڈیو ڈاؤنلوڈ ہو رہی ہے...")
+    msg = await update.message.reply_text("⏳ لنک مل گیا! فیکٹری ویڈیو ڈاؤنلوڈ کر رہی ہے...")
+    video_path = "video.mp4"
+    
+    try:
+        # 1. ویڈیو ڈاؤنلوڈ کریں
+        download_video(text, video_path)
+        await msg.edit_text("🎥 ویڈیو ڈاؤنلوڈ ہو گئی! اب گوگل کا دماغ اپلوڈ بائی پاس کر کے اسے چیک کر رہا ہے...")
 
-    # Background task شروع کرنے کا صحیح طریقہ
-    asyncio.create_task(process_video(context.bot, chat_id, url))
+        # 2. گوگل کو ڈائریکٹ ڈیٹا بھیجیں (401 ایرر بائی پاس ٹرک)
+        video_data = {
+            "mime_type": "video/mp4",
+            "data": pathlib.Path(video_path).read_bytes()
+        }
+        
+        prompt = "اس ویڈیو کو غور سے دیکھو اور فیس بک اور ٹک ٹاک کے لیے ایک زبردست، وائرل اور پرکشش پرامپٹ (کیپشن اور ہیش ٹیگز کے ساتھ) لکھو۔"
+        
+        # 3. جیمنی سے وائرل پرامپٹ لکھوائیں
+        response = model.generate_content([prompt, video_data])
+        
+        # 4. رزلٹ واپس بھیجیں
+        await msg.edit_text(f"🔥 **یہ لیں آپ کا ماسٹر پرامپٹ:**\n\n{response.text}")
 
+    except Exception as e:
+        error_msg = str(e)
+        if "401" in error_msg or "UNAUTHENTICATED" in error_msg:
+            await msg.edit_text("❌ استاد جی! گوگل نے اس `AQ.` والی چابی کو پوری طرح بلاک کر دیا ہے۔ آپ کو پرانے طریقے سے `AIza` والی چابی ہی نکالنی پڑے گی (Service Account والا ڈبہ خالی چھوڑ کر)۔")
+        else:
+            await msg.edit_text(f"❌ مسئلہ ہو گیا:\n{error_msg}")
+            
+    finally:
+        # صفائی (تاکہ سرور فل نہ ہو)
+        if os.path.exists(video_path):
+            os.remove(video_path)
+
+# ==========================================
+# 🚀 مین فنکشن (بوٹ سٹارٹر)
+# ==========================================
 def main():
-    # 1. Render کو خوش رکھنے کے لیے Web Server کو الگ تھریڈ میں سٹارٹ کریں
-    threading.Thread(target=run_web, daemon=True).start()
-
-    # 2. بوٹ کی کنفیگریشن
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    print("🚀 بوٹ لائیو ہے!")
-    
-    # 3. مسئلہ 2 کا حل: اسے سیدھا چلائیں، اب یہ اپنا ایونٹ لوپ خود ہینڈل کرے گا
-    app.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=["message"]
-    )
+    keep_alive()
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
