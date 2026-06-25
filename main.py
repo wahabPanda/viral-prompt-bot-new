@@ -1,12 +1,24 @@
 import os
-import time
 import threading
 import asyncio
+from flask import Flask
 from google import genai
 from google.genai import types
 import yt_dlp
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
+
+# --- Render کے لیے Dummy Web Server ---
+# یہ حصہ Render کو بتائے گا کہ آپ کی ایپ زندہ ہے، تاکہ وہ اسے بند نہ کرے۔
+web_app = Flask(__name__)
+
+@web_app.route('/')
+def home():
+    return "Bot is running perfectly! 🚀"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    web_app.run(host="0.0.0.0", port=port, use_reloader=False)
 
 # 🔑 Keys
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -47,8 +59,8 @@ async def process_video(bot, chat_id, url):
             'merge_output_format': 'mp4',
         }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        # ڈاؤنلوڈ کو الگ تھریڈ (thread) میں بھیج دیا تاکہ بوٹ بلاک نہ ہو
+        await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(ydl_opts).download([url]))
 
         if not os.path.exists(video_path):
             raise Exception("ویڈیو ڈاؤنلوڈ نہیں ہوئی۔")
@@ -58,27 +70,38 @@ async def process_video(bot, chat_id, url):
         with open(video_path, "rb") as f:
             video_bytes = f.read()
 
-        uploaded = client.files.upload(
-            file=video_bytes,
-            config=types.UploadFileConfig(mime_type="video/mp4")
-        )
+        # اپلوڈ کو بھی الگ تھریڈ میں کریں
+        def upload_file():
+            return client.files.upload(
+                file=video_bytes,
+                config=types.UploadFileConfig(mime_type="video/mp4")
+            )
+        uploaded = await asyncio.to_thread(upload_file)
 
         while True:
-            file_info = client.files.get(name=uploaded.name)
+            def get_file_info():
+                return client.files.get(name=uploaded.name)
+            file_info = await asyncio.to_thread(get_file_info)
+            
             state = str(file_info.state)
             if "ACTIVE" in state:
                 break
             elif "FAILED" in state:
                 raise Exception("گوگل اس ویڈیو کو پروسیس نہیں کر سکا۔")
-            time.sleep(4)
+            
+            # مسئلہ 1 کا حل: time.sleep() کی جگہ asyncio.sleep() کا استعمال
+            await asyncio.sleep(4)
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[
-                types.Part.from_uri(file_uri=uploaded.uri, mime_type="video/mp4"),
-                types.Part.from_text(SYSTEM_PROMPT)
-            ]
-        )
+        def generate_prompt():
+            return client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[
+                    types.Part.from_uri(file_uri=uploaded.uri, mime_type="video/mp4"),
+                    types.Part.from_text(SYSTEM_PROMPT)
+                ]
+            )
+        
+        response = await asyncio.to_thread(generate_prompt)
 
         await bot.send_message(chat_id=chat_id, text=response.text)
 
@@ -89,7 +112,7 @@ async def process_video(bot, chat_id, url):
             os.remove(video_path)
         if uploaded:
             try:
-                client.files.delete(name=uploaded.name)
+                await asyncio.to_thread(lambda: client.files.delete(name=uploaded.name))
             except:
                 pass
 
@@ -103,23 +126,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(chat_id=chat_id, text="⏳ لنک مل گیا! ویڈیو ڈاؤنلوڈ ہو رہی ہے...")
 
-    # Background thread میں process کرو
-    loop = asyncio.get_event_loop()
-    asyncio.ensure_future(process_video(context.bot, chat_id, url))
+    # Background task شروع کرنے کا صحیح طریقہ
+    asyncio.create_task(process_video(context.bot, chat_id, url))
 
-async def main():
-    # پرانی webhook ہٹاؤ
+def main():
+    # 1. Render کو خوش رکھنے کے لیے Web Server کو الگ تھریڈ میں سٹارٹ کریں
+    threading.Thread(target=run_web, daemon=True).start()
+
+    # 2. بوٹ کی کنفیگریشن
     app = Application.builder().token(TELEGRAM_TOKEN).build()
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 بوٹ polling mode میں لائیو ہے!")
+    print("🚀 بوٹ لائیو ہے!")
     
-    await app.run_polling(
+    # 3. مسئلہ 2 کا حل: اسے سیدھا چلائیں، اب یہ اپنا ایونٹ لوپ خود ہینڈل کرے گا
+    app.run_polling(
         drop_pending_updates=True,
         allowed_updates=["message"]
     )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
