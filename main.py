@@ -1,7 +1,7 @@
 import os
 from google import genai
 from google.genai import types
-from telegram import Update, Bot
+from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from flask import Flask, request, jsonify
 import yt_dlp
@@ -19,6 +19,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Flask app
 flask_app = Flask(__name__)
+flask_app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024
 
 # Global event loop
 loop = asyncio.new_event_loop()
@@ -45,6 +46,72 @@ Structure your response EXACTLY like this:
 Do not add any other conversational text. Just give me the pure Master Prompt format.
 """
 
+async def process_video(chat_id, url):
+    ydl_opts = {
+        'format': 'best[filesize<20M]/best',
+        'outtmpl': f'temp_video_{chat_id}.%(ext)s',
+        'quiet': True,
+        'noplaylist': True,
+        'merge_output_format': 'mp4',
+    }
+
+    video_path = None
+    uploaded = None
+
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+
+        # فائل ڈھونڈو
+        for ext in ['mp4', 'webm', 'mkv', 'avi']:
+            path = f'temp_video_{chat_id}.{ext}'
+            if os.path.exists(path):
+                video_path = path
+                break
+
+        if not video_path:
+            raise Exception("ویڈیو ڈاؤنلوڈ نہیں ہوئی۔")
+
+        await ptb_app.bot.send_message(chat_id=chat_id, text="🎥 ویڈیو آ گئی! اب AI اسے سمجھ رہا ہے...")
+
+        with open(video_path, "rb") as f:
+            video_bytes = f.read()
+
+        uploaded = client.files.upload(
+            file=video_bytes,
+            config=types.UploadFileConfig(mime_type="video/mp4")
+        )
+
+        while True:
+            file_info = client.files.get(name=uploaded.name)
+            state = str(file_info.state)
+            if "ACTIVE" in state:
+                break
+            elif "FAILED" in state:
+                raise Exception("گوگل اس ویڈیو کو پروسیس نہیں کر سکا۔")
+            time.sleep(4)
+
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                types.Part.from_uri(file_uri=uploaded.uri, mime_type="video/mp4"),
+                types.Part.from_text(SYSTEM_PROMPT)
+            ]
+        )
+
+        await ptb_app.bot.send_message(chat_id=chat_id, text=response.text)
+
+    except Exception as e:
+        await ptb_app.bot.send_message(chat_id=chat_id, text=f"❌ مسئلہ ہو گیا استاد جی: {str(e)}")
+    finally:
+        if video_path and os.path.exists(video_path):
+            os.remove(video_path)
+        if uploaded:
+            try:
+                client.files.delete(name=uploaded.name)
+            except:
+                pass
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     url = update.message.text
     chat_id = update.message.chat_id
@@ -55,65 +122,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(chat_id=chat_id, text="⏳ لنک مل گیا! ویڈیو ڈاؤنلوڈ کر کے AI کو بھیج رہا ہوں...")
 
-    ydl_opts = {
-        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        'outtmpl': 'temp_video.%(ext)s',
-        'quiet': True,
-        'noplaylist': True
-    }
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
-
-        await context.bot.send_message(chat_id=chat_id, text="🎥 ویڈیو آ گئی! اب AI اسے سمجھ رہا ہے...")
-
-        # نئی library سے ویڈیو اپلوڈ
-        with open("temp_video.mp4", "rb") as f:
-            video_bytes = f.read()
-
-        uploaded = client.files.upload(
-            file=video_bytes,
-            config=types.UploadFileConfig(mime_type="video/mp4")
-        )
-
-        # Processing کا انتظار
-        while True:
-            file_info = client.files.get(name=uploaded.name)
-            state = str(file_info.state)
-            if "ACTIVE" in state:
-                break
-            elif "FAILED" in state:
-                raise Exception("گوگل اس ویڈیو کو پروسیس نہیں کر سکا۔")
-            time.sleep(4)
-
-        # Master Prompt بناؤ
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=[
-                types.Part.from_uri(file_uri=uploaded.uri, mime_type="video/mp4"),
-                types.Part.from_text(SYSTEM_PROMPT)
-            ]
-        )
-
-        await context.bot.send_message(chat_id=chat_id, text=response.text)
-
-        if os.path.exists("temp_video.mp4"):
-            os.remove("temp_video.mp4")
-        client.files.delete(name=uploaded.name)
-
-    except Exception as e:
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ مسئلہ ہو گیا استاد جی: {str(e)}")
-        if os.path.exists("temp_video.mp4"):
-            os.remove("temp_video.mp4")
+    # Background میں چلاؤ — webhook timeout نہیں ہوگا
+    asyncio.run_coroutine_threadsafe(process_video(chat_id, url), loop)
 
 @flask_app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json(force=True)
     update = Update.de_json(data, ptb_app.bot)
-    future = asyncio.run_coroutine_threadsafe(ptb_app.process_update(update), loop)
-    future.result(timeout=60)
-    return 'OK', 200
+    asyncio.run_coroutine_threadsafe(ptb_app.process_update(update), loop)
+    return 'OK', 200  # فوری OK دو — processing background میں ہوگی
 
 @flask_app.route('/set_webhook', methods=['GET'])
 def set_webhook():
