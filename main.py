@@ -1,133 +1,129 @@
 import os
-import pathlib
+import logging
+import asyncio
+import yt_dlp
 import google.generativeai as genai
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from flask import Flask
-from threading import Thread
-import yt_dlp
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ==========================================
-# 🔑 چابیاں اب تجوری (Environment Variables) سے آئیں گی
-# ==========================================
+# ---------------- SETTINGS ----------------
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# ------------------------------------------
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash')
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-2.5-flash")
 
-# ==========================================
-# 🌐 سرور (Flask)
-# ==========================================
-app = Flask(__name__)
-@app.route('/')
-def home():
-    return "استاد جی کی وائرل فیکٹری فل سپیڈ پر چل رہی ہے! 🚀"
+logging.basicConfig(level=logging.INFO)
 
-def run():
-    app.run(host='0.0.0.0', port=8080)
+# AI کو ہدایات (ویڈیو کا تجزیہ کر کے پرومٹ بنانے کے لیے)
+ANALYSIS_INSTRUCTION = """
+You are an expert AI video prompt engineer for Google Veo 3.1 and Seedance 2.0.
 
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
+Watch this video carefully and analyze:
+- The main subject (animal/person/object)
+- Actions and movements
+- Camera angles and movement
+- Lighting and time of day
+- Environment and background
+- Visual style and mood
+- Colors and atmosphere
 
-# ==========================================
-# 📥 ویڈیو ڈاؤنلوڈر 
-# ==========================================
-def download_video(url, output_path="video.mp4"):
-    if os.path.exists(output_path):
-        os.remove(output_path)
+Then create TWO ready-to-use prompts to RECREATE a similar video:
+
+🎬 **VEO 3.1 PROMPT (with audio):**
+[Write a detailed cinematic prompt including subject, action, camera, 
+lighting, environment, style, and audio/sound design. 8 seconds.]
+
+🎬 **SEEDANCE 2.0 PROMPT:**
+[Write a detailed cinematic prompt for Seedance.]
+
+📱 **FACEBOOK CAPTION + 15 HASHTAGS:**
+[Write an engaging caption with emojis and 15 viral hashtags for USA audience.]
+
+Make everything optimized to go VIRAL on Facebook Reels.
+"""
+
+
+# ویڈیو ڈاؤن لوڈ کرنے والا فنکشن
+def download_video(url: str, filename: str = "video.mp4") -> str:
     ydl_opts = {
-        'outtmpl': output_path,
-        'format': 'best',
+        'format': 'best[ext=mp4]/best',
+        'outtmpl': filename,
+        'overwrites': True,
         'quiet': True,
-        'no_warnings': True
+        'noplaylist': True,
     }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.download([url])
-    return output_path
+    return filename
 
-# ==========================================
-# 🤖 ٹیلی گرام مین فنکشن
-# ==========================================
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if not text or ("http" not in text):
-        await update.message.reply_text("استاد جی! براہ کرم فیس بک یا ٹک ٹاک کی ویڈیو کا لنک بھیجیں۔ 🚀")
+
+# /start کمانڈ
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 خوش آمدید!\n\n"
+        "🎬 مجھے کوئی بھی Facebook / Instagram / TikTok ویڈیو کا لنک بھیجیں\n\n"
+        "میں اسے دیکھ کر آپ کے لیے Veo 3.1 اور Seedance 2.0 کے لیے "
+        "تیار پرومٹ بنا دوں گا! ✨"
+    )
+
+
+# لنک ہینڈل کرنے والا فنکشن
+async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text.strip()
+
+    if not url.startswith("http"):
+        await update.message.reply_text("❌ براہِ کرم درست ویڈیو لنک بھیجیں۔")
         return
 
-    if not GEMINI_API_KEY or not TELEGRAM_TOKEN:
-        await update.message.reply_text("❌ استاد جی! رینڈر کی تجوری میں چابیاں (Environment Variables) غائب ہیں۔")
-        return
+    status = await update.message.reply_text("⏳ ویڈیو ڈاؤن لوڈ ہو رہی ہے...")
 
-    msg = await update.message.reply_text("⏳ لنک مل گیا! فیکٹری ویڈیو ڈاؤنلوڈ کر رہی ہے...")
-    video_path = "video.mp4"
-    
+    video_path = None
     try:
-        download_video(text, video_path)
-        await msg.edit_text("🎥 ویڈیو مل گئی! جیمنی 2.5 آپ کا سنگل میسج ماسٹر پرامپٹ تیار کر رہا ہے...")
+        # 1) ویڈیو ڈاؤن لوڈ
+        video_path = await asyncio.to_thread(download_video, url)
 
-        video_data = {
-            "mime_type": "video/mp4",
-            "data": pathlib.Path(video_path).read_bytes()
-        }
-        
-        # 🔥 جیمنی کو سختی سے لمٹ کر دیا گیا ہے تاکہ 1 ہی میسج میں آئے
-        prompt = """
-        Watch this video carefully and reverse-engineer its viral formula to create an "AI System Meta-Prompt".
-        
-        CRITICAL LIMIT: Your ENTIRE response MUST strictly be UNDER 3500 characters. Be concise, punchy, and highly impactful so it fits perfectly in a single Telegram message. Do not overwrite.
+        await status.edit_text("🧠 AI ویڈیو کا تجزیہ کر رہی ہے...")
 
-        You MUST strictly output ONLY the exact format below. Do not add any conversational text. 
-        CRITICAL: The actual prompt MUST be enclosed inside a markdown code block (using ```text at the start and ``` at the end) so it becomes a tap-to-copy box.
+        # 2) Gemini پر اپ لوڈ
+        video_file = await asyncio.to_thread(genai.upload_file, video_path)
 
-        Your response MUST look EXACTLY like this in English:
+        # پروسیسنگ مکمل ہونے کا انتظار
+        while video_file.state.name == "PROCESSING":
+            await asyncio.sleep(3)
+            video_file = await asyncio.to_thread(genai.get_file, video_file.name)
 
-        🎯 **Generated Master Prompt:**
-        *(Tap the prompt below to copy it!)*
+        # 3) تجزیہ + پرومٹ بنائیں
+        response = await asyncio.to_thread(
+            model.generate_content, [video_file, ANALYSIS_INSTRUCTION]
+        )
 
-        ```text
-        ### MASTER PROMPT - NICHE: [Catchy Niche Title]
+        result = response.text
 
-        You are now permanently activated as "[Catchy Niche Title] VIRAL ENGINE". Generate UNLIMITED, production-ready video prompts for this niche. Do not exit this role.
+        # 4) جواب بھیجیں (لمبا ہو تو ٹکڑوں میں)
+        await status.delete()
+        for i in range(0, len(result), 4000):
+            await update.message.reply_text(result[i:i + 4000])
 
-        --- CORE IDENTITY ---
-        NICHE: [Catchy Niche Title] - [Short description]
-        AUDIENCE: [Target audience profile]
-        CONTENT STYLE: [3-4 descriptive keywords]
-
-        --- STORYTELLING DNA ---
-        1. HOOK (0-1.5s): [Attention grabber]
-        2. ESCALATION (1.5-5s): [Tension building]
-        3. PAYOFF (5s+): [Climax/Resolution]
-
-        --- 🎬 VEO 3.1 & SEEDANCE.2 MASTER PROMPT ---
-        [Write a highly detailed but concise paragraph describing the video for AI generation. Act as a film director. Use cinematic terms (anamorphic lens, Rembrandt lighting, etc.). Vividly describe subjects, emotions, and camera movements. Keep this specific section under 1500 characters.]
-        ```
-        """
-        
-        response = model.generate_content([prompt, video_data])
-        
-        # 🔥 قسطیں ختم! سیدھا ایک ہی میسج ڈلیور
-        await msg.edit_text(response.text)
+        # فائل صاف کریں
+        await asyncio.to_thread(genai.delete_file, video_file.name)
 
     except Exception as e:
-        error_message = str(e)
-        if "Message is too long" in error_message:
-            await msg.edit_text("❌ مسئلہ: ویڈیو میں اتنی زیادہ ڈیٹیل تھی کہ جیمنی نے لمٹ کراس کر دی۔ براہ کرم کوئی اور چھوٹی ویڈیو ٹرائی کریں یا دوبارہ لنک بھیجیں۔")
-        else:
-            await msg.edit_text(f"❌ مسئلہ ہو گیا:\n{error_message}")
-            
+        await status.edit_text(f"❌ خرابی: {str(e)}")
     finally:
-        if os.path.exists(video_path):
+        if video_path and os.path.exists(video_path):
             os.remove(video_path)
 
+
+# مین فنکشن
 def main():
-    keep_alive()
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
+    print("✅ بوٹ چل پڑا ہے...")
+    app.run_polling()
+
 
 if __name__ == "__main__":
     main()
