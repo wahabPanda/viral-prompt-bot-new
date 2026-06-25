@@ -67,7 +67,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         download_video(text, video_path)
-        await msg.edit_text("🎥 ویڈیو مل گئی! جیمنی 2.5 وائرل پرامپٹ لکھ رہا ہے (تھوڑا انتظار کریں)...")
+        await msg.edit_text("🎥 ویڈیو مل گئی! جیمنی 2.5 ویڈیو کا ایکسرے (X-Ray) کر رہا ہے (تھوڑا انتظار کریں)...")
 
         # ویڈیو کا ڈیٹا ڈائریکٹ میموری میں (401 ایرر بائی پاس)
         video_data = {
@@ -75,10 +75,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "data": pathlib.Path(video_path).read_bytes()
         }
         
-        prompt = "اس ویڈیو کو غور سے دیکھو اور فیس بک اور ٹک ٹاک کے لیے ایک زبردست، وائرل اور پرکشش پرامپٹ (کیپشن اور ہیش ٹیگز کے ساتھ) لکھو۔"
+        # 🔥 نیا ماسٹر پرامپٹ (انگلش اور پوری تفصیل کے ساتھ)
+        prompt = """
+        Watch this video carefully and provide an extremely detailed, scene-by-scene breakdown. 
+        Act like a professional film director and observer. 
+        Describe everything in absolute detail:
+        - Camera angles and movements (pan, zoom, close-up, wide shot).
+        - Every single action, movement, and expression of the people or subjects.
+        - Background details, objects, environment, houses, weather, and lighting.
+        - Any spoken words, text on screen, or specific sounds you can identify.
+        Leave nothing out. I want an X-ray level of detail of what is happening in the video.
+        
+        Finally, at the end, provide a highly engaging, viral caption along with trending hashtags for Facebook and TikTok based on this video.
+        
+        IMPORTANT: The entire response MUST be written in English.
+        """
         
         response = model.generate_content([prompt, video_data])
-        await msg.edit_text(f"🔥 **یہ لیں آپ کا ماسٹر پرامپٹ:**\n\n{response.text}")
+        await msg.edit_text(f"🔥 **یہ لیں آپ کی ویڈیو کی مکمل تفصیل:**\n\n{response.text}")
 
     except Exception as e:
         await msg.edit_text(f"❌ مسئلہ ہو گیا:\n{str(e)}")
