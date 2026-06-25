@@ -1,17 +1,18 @@
 import os
 import google.generativeai as genai
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
-from flask import Flask, request
+from flask import Flask, request, jsonify
 import asyncio
 import yt_dlp
 import time
 import threading
+import json
 
-# 🔑 Keys - Render Environment Variables سے
+# 🔑 Keys
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # e.g. https://viral-prompt-bot-new.onrender.com
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # https://viral-prompt-bot-new.onrender.com
 
 # Gemini configure
 genai.configure(api_key=GEMINI_API_KEY)
@@ -19,8 +20,8 @@ genai.configure(api_key=GEMINI_API_KEY)
 # Flask app
 flask_app = Flask(__name__)
 
-# Telegram app (global)
-telegram_app = None
+# Telegram Application
+ptb_app = Application.builder().token(TELEGRAM_TOKEN).build()
 
 # 🎬 ماسٹر پرامپٹ
 SYSTEM_PROMPT = """
@@ -64,10 +65,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(chat_id=chat_id, text="🎥 ویڈیو آ گئی! اب AI اسے سمجھ رہا ہے...")
 
-        video_file = genai.upload_file(
-            path="temp_video.mp4",
-            mime_type="video/mp4"
-        )
+        video_file = genai.upload_file(path="temp_video.mp4", mime_type="video/mp4")
 
         while True:
             file_info = genai.get_file(video_file.name)
@@ -80,7 +78,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         model = genai.GenerativeModel("gemini-2.5-flash")
         response = model.generate_content([SYSTEM_PROMPT, video_file])
-
         await context.bot.send_message(chat_id=chat_id, text=response.text)
 
         if os.path.exists("temp_video.mp4"):
@@ -92,44 +89,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists("temp_video.mp4"):
             os.remove("temp_video.mp4")
 
+# ✅ Webhook route - Telegram یہاں messages بھیجے گا
+@flask_app.route('/webhook', methods=['POST'])
+def webhook():
+    data = request.get_json(force=True)
+    update = Update.de_json(data, ptb_app.bot)
+    asyncio.run(ptb_app.process_update(update))
+    return 'OK', 200
+
+# ✅ Webhook set کرنے کا route
+@flask_app.route('/set_webhook', methods=['GET'])
+def set_webhook():
+    webhook_url = f"{WEBHOOK_URL}/webhook"
+    bot = Bot(token=TELEGRAM_TOKEN)
+    result = asyncio.run(bot.set_webhook(url=webhook_url))
+    if result:
+        return jsonify({"status": "✅ Webhook لگ گئی!", "url": webhook_url})
+    else:
+        return jsonify({"status": "❌ Webhook نہیں لگی"})
+
 @flask_app.route('/')
 def home():
     return "استاد جی، فیکٹری 24 گھنٹے لائیو ہے! 🚀"
 
-@flask_app.route(f'/webhook', methods=['POST'])
-def webhook():
-    data = request.get_json()
-    if telegram_app:
-        asyncio.run(telegram_app.update_queue.put(
-            Update.de_json(data, telegram_app.bot)
-        ))
-    return 'OK'
-
-async def setup_webhook():
-    await telegram_app.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
-    print(f"✅ Webhook لگ گئی: {WEBHOOK_URL}/webhook")
-
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    flask_app.run(host='0.0.0.0', port=port)
-
-async def main():
-    global telegram_app
-    telegram_app = Application.builder().token(TELEGRAM_TOKEN).build()
-    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    await telegram_app.initialize()
-    await setup_webhook()
-    await telegram_app.start()
-
-    print("🚀 بوٹ Webhook موڈ میں لائیو ہے!")
-
-    # Flask الگ thread میں چلاؤ
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-
-    # bot چلتا رہے
-    await asyncio.Event().wait()
+async def init_app():
+    ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    await ptb_app.initialize()
+    await ptb_app.start()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(init_app())
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host='0.0.0.0', port=port)
