@@ -1,4 +1,4 @@
 flask
 yt-dlp
 python-telegram-bot
-google-generativeai
+google-genai
