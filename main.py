@@ -3,22 +3,24 @@ import google.generativeai as genai
 from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from flask import Flask, request, jsonify
-import asyncio
 import yt_dlp
 import time
 import threading
-import json
+import asyncio
 
 # 🔑 Keys
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL")  # https://viral-prompt-bot-new.onrender.com
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
 # Gemini configure
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Flask app
 flask_app = Flask(__name__)
+
+# Global event loop
+loop = asyncio.new_event_loop()
 
 # Telegram Application
 ptb_app = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -89,20 +91,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if os.path.exists("temp_video.mp4"):
             os.remove("temp_video.mp4")
 
-# ✅ Webhook route - Telegram یہاں messages بھیجے گا
 @flask_app.route('/webhook', methods=['POST'])
 def webhook():
     data = request.get_json(force=True)
     update = Update.de_json(data, ptb_app.bot)
-    asyncio.run(ptb_app.process_update(update))
+    future = asyncio.run_coroutine_threadsafe(ptb_app.process_update(update), loop)
+    future.result(timeout=60)
     return 'OK', 200
 
-# ✅ Webhook set کرنے کا route
 @flask_app.route('/set_webhook', methods=['GET'])
 def set_webhook():
     webhook_url = f"{WEBHOOK_URL}/webhook"
-    bot = Bot(token=TELEGRAM_TOKEN)
-    result = asyncio.run(bot.set_webhook(url=webhook_url))
+    future = asyncio.run_coroutine_threadsafe(
+        ptb_app.bot.set_webhook(url=webhook_url), loop
+    )
+    result = future.result(timeout=10)
     if result:
         return jsonify({"status": "✅ Webhook لگ گئی!", "url": webhook_url})
     else:
@@ -112,12 +115,26 @@ def set_webhook():
 def home():
     return "استاد جی، فیکٹری 24 گھنٹے لائیو ہے! 🚀"
 
-async def init_app():
+def run_event_loop():
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+async def init_ptb():
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     await ptb_app.initialize()
     await ptb_app.start()
+    # Webhook خود لگاؤ
+    await ptb_app.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
+    print(f"✅ Webhook لگ گئی: {WEBHOOK_URL}/webhook")
 
 if __name__ == "__main__":
-    asyncio.run(init_app())
+    # Event loop الگ thread میں چلاؤ
+    t = threading.Thread(target=run_event_loop, daemon=True)
+    t.start()
+
+    # PTB initialize کرو
+    asyncio.run_coroutine_threadsafe(init_ptb(), loop).result()
+
+    print("🚀 بوٹ لائیو ہے!")
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port)
