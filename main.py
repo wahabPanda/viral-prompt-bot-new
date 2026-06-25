@@ -1,5 +1,6 @@
 import os
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 from flask import Flask, request, jsonify
@@ -13,8 +14,8 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
 
-# Gemini configure
-genai.configure(api_key=GEMINI_API_KEY)
+# Gemini client
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 # Flask app
 flask_app = Flask(__name__)
@@ -67,10 +68,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await context.bot.send_message(chat_id=chat_id, text="🎥 ویڈیو آ گئی! اب AI اسے سمجھ رہا ہے...")
 
-        video_file = genai.upload_file(path="temp_video.mp4", mime_type="video/mp4")
+        # نئی library سے ویڈیو اپلوڈ
+        with open("temp_video.mp4", "rb") as f:
+            video_bytes = f.read()
 
+        uploaded = client.files.upload(
+            file=video_bytes,
+            config=types.UploadFileConfig(mime_type="video/mp4")
+        )
+
+        # Processing کا انتظار
         while True:
-            file_info = genai.get_file(video_file.name)
+            file_info = client.files.get(name=uploaded.name)
             state = str(file_info.state)
             if "ACTIVE" in state:
                 break
@@ -78,13 +87,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 raise Exception("گوگل اس ویڈیو کو پروسیس نہیں کر سکا۔")
             time.sleep(4)
 
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content([SYSTEM_PROMPT, video_file])
+        # Master Prompt بناؤ
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[
+                types.Part.from_uri(file_uri=uploaded.uri, mime_type="video/mp4"),
+                types.Part.from_text(SYSTEM_PROMPT)
+            ]
+        )
+
         await context.bot.send_message(chat_id=chat_id, text=response.text)
 
         if os.path.exists("temp_video.mp4"):
             os.remove("temp_video.mp4")
-        genai.delete_file(video_file.name)
+        client.files.delete(name=uploaded.name)
 
     except Exception as e:
         await context.bot.send_message(chat_id=chat_id, text=f"❌ مسئلہ ہو گیا استاد جی: {str(e)}")
@@ -123,18 +139,13 @@ async def init_ptb():
     ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     await ptb_app.initialize()
     await ptb_app.start()
-    # Webhook خود لگاؤ
     await ptb_app.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
     print(f"✅ Webhook لگ گئی: {WEBHOOK_URL}/webhook")
 
 if __name__ == "__main__":
-    # Event loop الگ thread میں چلاؤ
     t = threading.Thread(target=run_event_loop, daemon=True)
     t.start()
-
-    # PTB initialize کرو
     asyncio.run_coroutine_threadsafe(init_ptb(), loop).result()
-
     print("🚀 بوٹ لائیو ہے!")
     port = int(os.environ.get("PORT", 8080))
     flask_app.run(host='0.0.0.0', port=port)
