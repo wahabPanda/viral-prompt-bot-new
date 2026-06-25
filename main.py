@@ -11,7 +11,7 @@ import yt_dlp
 # 🔑 استاد جی، آپ کی چابیاں یہاں لگ گئی ہیں
 # ==========================================
 TELEGRAM_TOKEN = "7690264234:AAEe1YNQQMu5xikVIB-Rcg6nJVklYAuOPvc"
-GEMINI_API_KEY = "AQ.Ab8RN6JmEmM_EkFqqDwoK_QjJP3lIop9laaYDLW_8xxGM_PEpg"
+GEMINI_API_KEY = "AIzaSyBKzLzA8PFwzY9SqDDlOYp1tho_yI3AvF8"
 
 # جیمنی کی کنفیگریشن
 genai.configure(api_key=GEMINI_API_KEY)
