@@ -15,7 +15,7 @@ GEMINI_API_KEY = "AIzaSyBKzLzA8PFwzY9SqDDlOYp1tho_yI3AvF8"
 
 # جیمنی کی کنفیگریشن
 genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # ==========================================
 # 🌐 Flask Server (بوٹ کو 24 گھنٹے جاگتا رکھنے کے لیے)
